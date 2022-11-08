@@ -1,0 +1,174 @@
+#!/usr/bin/env python
+
+# A sample training component that trains a simple scikit-learn decision tree model.
+# This implementation works in File mode and makes no assumptions about the input file names.
+# Input is specified as CSV with a data point in each row and the labels in the first column.
+
+from __future__ import print_function
+
+import os
+import json
+import pickle
+import sys
+import traceback
+import numpy as np
+import pandas as pd 
+import tensorflow as tf
+from tensorflow.keras.layers import Dense,Flatten,Dropout,Conv2D,MaxPooling2D,BatchNormalization,InputLayer
+from tensorflow.keras.models import Model,Sequential
+from tensorflow.keras.utils import plot_model
+from tensorflow.keras.preprocessing.image import load_img
+from tensorflow.keras.optimizers import SGD
+from tensorflow.keras.callbacks import Callback
+from tensorflow.keras.losses import SparseCategoricalCrossentropy
+from PIL import Image
+import matplotlib as mpl
+import matplotlib.pyplot as plt 
+import sklearn as skl
+from sklearn.model_selection import train_test_split
+import tqdm
+from tqdm import tqdm
+import seaborn as sns
+import warnings
+warnings.filterwarnings(action='ignore')
+
+print(f"TensorFlow version: {tf.__version__}")
+print(f"Image version: {Image.__version__}")
+print(f"Matplotlib version: {mpl.__version__}")
+print(f"Seaborn version: {sns.__version__}")
+print(f"Numpy version: {np.__version__}")
+print(f"Padas version: {pd.__version__}")
+print(f"Sci-Kit version: {skl.__version__}")
+
+# These are the paths to where SageMaker mounts interesting things in your container.
+
+prefix = '/opt/ml/'
+
+input_path = prefix + 'input/data'
+output_path = os.path.join(prefix, 'output')
+model_path = os.path.join(prefix, 'model')
+param_path = os.path.join(prefix, 'input/config/hyperparameters.json')
+print("[INFO] param path: ",param_path) 
+
+# This algorithm has a single channel of input data called 'training'. Since we run in
+# File mode, the input files are copied to the directory specified here.
+channel_name='training'
+training_path = os.path.join(input_path, channel_name)
+mode_name="ethnicity_prediction-model.pkl"
+
+class Custom(Callback):
+    def on_epoch_end(self,epochs,logs={}):
+        if logs.get("val_acc") > 0.790:
+            print("Reached acc 79% !")
+            self.model.stop_training= True
+
+
+# The function to execute the training.
+def train():
+    print('[INFO] Starting the training.')
+    try:
+        # Read in any hyperparameters that the user passed with the training job
+        with open(param_path, 'r') as tc:
+            trainingParams = json.load(tc)
+
+        print("[INFO] trainingParams: ", trainingParams)
+        # Take the set of files and read them all into a single pandas dataframe
+        input_files = [ os.path.join(training_path, file) for file in os.listdir(training_path) ]
+        if len(input_files) == 0:
+            raise ValueError(('There are no files in {}.\n' +
+                              'This usually indicates that the channel ({}) was incorrectly specified,\n' +
+                              'the data specification in S3 was incorrectly specified or the role specified\n' +
+                              'does not have permission to access the data.').format(training_path, channel_name))
+        print("[INFO] input_files: ", input_files)
+        # raw_data = [ pd.read_csv(file, header=None) for file in input_files ]
+        raw_data = [ pd.read_csv(file) for file in input_files ]
+        print("[INFO] raw_data: ", raw_data)
+        train_data = pd.concat(raw_data)
+        print("[INFO] Train dataframe: ", train_data.head(3))
+
+        # Unique ethnicity
+        names_ethnicity = ['White', 'Black', 'Asian', 'Indian', 'Other']
+        ethnicity_unique = train_data['ethnicity'].unique()
+        ethnicity_unique = np.sort(ethnicity_unique)
+        for x in ethnicity_unique:
+            print(f'[INFO] Train - Ethnicity id: {x} value: {names_ethnicity[x]}')
+
+        train_data['pixels'] = train_data['pixels'].apply(lambda x : np.array(x.split(), dtype="float32"))
+        train_data['pixels'] = train_data['pixels'].apply(lambda x : x /255)
+        x = np.array(train_data['pixels'].tolist())
+        x = x.reshape(x.shape[0],48,48,1)
+        print(f'[INFO] Train - type: {type(x)}, shape: {x.shape}')
+
+        # Split data taking y=ethnicity
+        y = train_data['ethnicity']
+        x_train,x_test,y_train,y_test = train_test_split(x, y, test_size=0.20, random_state=42)
+
+
+        # labels are in the first column
+        # train_y = train_data.ix[:,0] # deprecated
+        train_y = train_data.iloc[:,0]
+        print(f'[INFO] Train - train_y: {train_y.head(3)}')
+        # train_X = train_data.ix[:,1:] # deprecated
+        train_X = train_data.iloc[:,1:]
+        print(f'[INFO] Train - train_X: {train_X.head(3)}')
+
+
+        # Here we only support a single hyperparameter. Note that hyperparameters are always passed in as
+        # strings, so we need to do any necessary conversions.
+        # max_leaf_nodes = trainingParams.get('max_leaf_nodes', None)
+        # if max_leaf_nodes is not None:
+        #    max_leaf_nodes = int(max_leaf_nodes)
+
+        print("[INFO] max_leaf_nodes: ", max_leaf_nodes)
+        # Now use scikit-learn's decision tree classifier to train the model.
+        # clf = tree.DecisionTreeClassifier(max_leaf_nodes=max_leaf_nodes)
+        # clf = clf.fit(train_X, train_y)
+
+
+        model_eth = Sequential([
+            InputLayer((48,48,1)),
+            Conv2D(32,(3,3),input_shape=(32,32,3),activation='relu'),
+            MaxPooling2D(pool_size=(2,2)),
+            Conv2D(64,(3,3),activation='relu'),
+            MaxPooling2D(pool_size=(2,2)),
+            Flatten(),
+            Dense(64,activation='relu'),
+            Dropout(0.5),
+            Dense(5)
+        ])
+        model_eth.compile(loss=SparseCategoricalCrossentropy(from_logits=True), optimizer='rmsprop', metrics=['acc'])
+        print(f'[INFO] Train model summary: {model_eth.summary()}')
+        
+        callback = Custom()
+        callbacks= [callback]
+        history  = model_eth.fit(x_train, y_train, epochs=100, validation_split=0.1, batch_size=64, callbacks=callbacks)
+        # history  = model_eth.fit(x_train, y_train, epochs=15, validation_split=0.1, batch_size=64)
+
+        loss,acc = model_eth.evaluate(x_test, y_test)
+        print(f'[INFO] Train model acc: {acc}')
+
+
+
+        print("[INFO] model_path: ", model_path) 
+        # save the model
+        with open(os.path.join(model_path, mode_name), 'wb') as fileout:
+            pickle.dump(clf, fileout)
+        
+        print('[INFO] Training complete.')
+        print("[INFO] Model saved at: ", model_path) 
+    except Exception as e:
+        # Write out an error file. This will be returned as the failureReason in the
+        # DescribeTrainingJob result.
+        trc = traceback.format_exc()
+        with open(os.path.join(output_path, 'failure'), 'w') as s:
+            s.write('Exception during training: ' + str(e) + '\n' + trc)
+        # Printing this causes the exception to be in the training job logs, as well.
+        print('Exception during training: ' + str(e) + '\n' + trc, file=sys.stderr)
+        # A non-zero exit code causes the training job to be marked as Failed.
+        sys.exit(255)
+
+if __name__ == '__main__':
+    train()
+
+    # A zero exit code causes the job to be marked a Succeeded.
+    sys.exit(0)
