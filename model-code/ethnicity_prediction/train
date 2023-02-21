@@ -87,7 +87,8 @@ def train():
         print("[INFO] Train dataframe: ", train_data.head(3))
 
         # Unique ethnicity
-        names_ethnicity = ['White', 'Black', 'Asian', 'Indian', 'Other']
+        # names_ethnicity = ['White', 'Black', 'Asian', 'Indian', 'Other']
+        name_ethnicity = ['American', 'African American', 'Asian', 'Hispanic', 'Other']
         ethnicity_unique = train_data['ethnicity'].unique()
         ethnicity_unique = np.sort(ethnicity_unique)
         for x in ethnicity_unique:
